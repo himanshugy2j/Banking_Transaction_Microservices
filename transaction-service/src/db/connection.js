@@ -4,21 +4,21 @@ import dotenv from "dotenv";
 dotenv.config();
 const { Pool } = pkg;
 
-export const connectDB = async () => {
-  const pool = new Pool({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD, // must be string
-    database: process.env.DB_NAME,
-  });
+const pool = new Pool({
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+});
 
+export const connectDB = async () => {
   try {
     await pool.connect();
     console.log("✅ Connected to PostgreSQL");
   } catch (err) {
     console.error("❌ Database connection error:", err);
-    throw err;
   }
-  return pool;
 };
+
+export default pool;
