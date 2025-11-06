@@ -1,165 +1,54 @@
-// src/routes/transactions.js
 import express from "express";
 import transactionService from "../services/transactionService.js";
 
 const router = express.Router();
 
-/**
- * @swagger
- * tags:
- *   name: Transactions
- *   description: APIs for deposits, withdrawals, and account statements
- */
-
-/**
- * @swagger
- * /transactions/deposit:
- *   post:
- *     summary: Deposit money into an account
- *     tags: [Transactions]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - account_id
- *               - amount
- *             properties:
- *               account_id:
- *                 type: integer
- *                 example: 1001
- *               amount:
- *                 type: number
- *                 example: 2500.75
- *               counterparty:
- *                 type: string
- *                 example: "ATM Deposit"
- *               description:
- *                 type: string
- *                 example: "Initial deposit"
- *     responses:
- *       201:
- *         description: Deposit successful
- *       422:
- *         description: Overdraft not allowed
- *       500:
- *         description: Internal error
- */
+// Deposit endpoint
 router.post("/deposit", async (req, res) => {
   try {
-    const { account_id, amount, counterparty, description } = req.body;
-    const txn = await transactionService.processDeposit({
-      account_id,
-      amount,
-      counterparty,
-      description,
-    });
-    return res.status(201).json(txn);
+    const txn = await transactionService.processDeposit(req.body);
+    res.json(txn);
   } catch (err) {
     console.error("deposit error:", err);
-    if (err.code === "NO_OVERDRAFT")
-      return res.status(422).json({ error: "NO_OVERDRAFT" });
-    return res.status(500).json({ error: "INTERNAL_ERROR" });
+    if (err.code) {
+      // Send specific error code and 400 status
+      res.status(400).json({ error: err.code });
+    } else {
+      res.status(500).json({ error: "INTERNAL_ERROR" });
+    }
   }
 });
 
-/**
- * @swagger
- * /transactions/withdraw:
- *   post:
- *     summary: Withdraw money from an account
- *     tags: [Transactions]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - account_id
- *               - amount
- *             properties:
- *               account_id:
- *                 type: integer
- *                 example: 1001
- *               amount:
- *                 type: number
- *                 example: 500.00
- *               counterparty:
- *                 type: string
- *                 example: "ATM Withdrawal"
- *               description:
- *                 type: string
- *                 example: "Cash withdrawal"
- *     responses:
- *       201:
- *         description: Withdrawal successful
- *       422:
- *         description: Overdraft not allowed
- *       500:
- *         description: Internal error
- */
+// Withdraw endpoint
 router.post("/withdraw", async (req, res) => {
   try {
-    const { account_id, amount, counterparty, description } = req.body;
-    const txn = await transactionService.processWithdraw({
-      account_id,
-      amount,
-      counterparty,
-      description,
-    });
-    return res.status(201).json(txn);
+    const txn = await transactionService.processWithdraw(req.body);
+    res.json(txn);
   } catch (err) {
     console.error("withdraw error:", err);
-    if (err.code === "NO_OVERDRAFT")
-      return res.status(422).json({ error: "NO_OVERDRAFT" });
-    return res.status(500).json({ error: "INTERNAL_ERROR" });
+    if (err.code) {
+      // Send specific error code and 400 status
+      res.status(400).json({ error: err.code });
+    } else {
+      res.status(500).json({ error: "INTERNAL_ERROR" });
+    }
   }
 });
 
-/**
- * @swagger
- * /transactions/statement/{accountId}:
- *   get:
- *     summary: Get the account statement for a specific account
- *     tags: [Transactions]
- *     parameters:
- *       - name: accountId
- *         in: path
- *         required: true
- *         schema:
- *           type: integer
- *           example: 1001
- *       - name: limit
- *         in: query
- *         required: false
- *         schema:
- *           type: integer
- *           example: 50
- *       - name: offset
- *         in: query
- *         required: false
- *         schema:
- *           type: integer
- *           example: 0
- *     responses:
- *       200:
- *         description: List of transactions for the account
- *       500:
- *         description: Internal error
- */
-router.get("/statement/:accountId", async (req, res) => {
+// Get statement endpoint
+router.get("/statement/:account_id", async (req, res) => {
   try {
-    const accountId = parseInt(req.params.accountId, 10);
-    const limit = parseInt(req.query.limit || "50", 10);
-    const offset = parseInt(req.query.offset || "0", 10);
-    const rows = await transactionService.getStatement(accountId, limit, offset);
-    return res.json(rows);
+    const { account_id } = req.params;
+    const { limit = 50, offset = 0 } = req.query;
+    const statement = await transactionService.getStatement(account_id, limit, offset);
+    res.json(statement);
   } catch (err) {
     console.error("statement error:", err);
-    return res.status(500).json({ error: "INTERNAL_ERROR" });
+    if (err.code) {
+      res.status(400).json({ error: err.code });
+    } else {
+      res.status(500).json({ error: "INTERNAL_ERROR" });
+    }
   }
 });
 
