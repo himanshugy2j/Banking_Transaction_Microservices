@@ -5,10 +5,13 @@ import { connectDB } from "./db/connection.js";
 import customerRoutes from "./routes/customers.js";
 import accountRoutes from "./routes/accounts.js";
 import transactionRoutes from "./routes/transactions.js";
-
+import { sync as globSync } from "glob";
 // ✅ Swagger imports
 import swaggerJSDoc from "swagger-jsdoc";
 import swaggerUi from "swagger-ui-express";
+
+// Automatically find all route files in src/routes
+const routeFiles = globSync("./src/routes/**/*.js");
 
 dotenv.config();
 const app = express();
@@ -30,7 +33,7 @@ const swaggerOptions = {
       },
     ],
   },
-  apis: ["./routes/*.js"], // scans your route files for JSDoc annotations
+  apis: routeFiles, // scans your route files for JSDoc annotations
 };
 
 const swaggerSpec = swaggerJSDoc(swaggerOptions);
