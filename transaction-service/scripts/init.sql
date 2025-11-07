@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS transactions (
   amount NUMERIC(15, 2),
   txn_type VARCHAR(20),
   counterparty VARCHAR(100),
-  reference VARCHAR(200),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+SELECT setval('transactions_txn_id_seq', COALESCE((SELECT MAX(txn_id)+1 FROM transactions), 1), false);
+

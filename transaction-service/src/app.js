@@ -1,6 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
-import { connectRabbitMQ } from "./rabbitmq/connection.js";
+import { connectRabbitMQ } from "./services/eventPublisher.js";
 import { connectDB } from "./db/connection.js";
 import customerRoutes from "./routes/customers.js";
 import accountRoutes from "./routes/accounts.js";
