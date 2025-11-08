@@ -1,171 +1,193 @@
-// src/services/transactionService.js
 import db from "../db/connection.js";
-import { v4 as uuidv4 } from "uuid";
-import { publishEvent } from "./eventPublisher.js"; // New import for publishing events
+import { publishEvent } from "./eventPublisher.js";
 
-const DAILY_LIMIT = 200000; // ₹2,00,000
-
-// Helper: Check if account is frozen
-async function checkAccountStatus(account_id) {
-  const account = await db.query(
-    "SELECT status, balance FROM accounts WHERE account_id = $1",
-    [account_id]
+// ===================
+// Daily limit helper
+// ===================
+async function checkDailyLimit(accountId, amount) {
+  const today = new Date().toISOString().split("T")[0];
+  const res = await db.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total
+     FROM transactions
+     WHERE account_id=$1 AND txn_type IN ('WITHDRAW', 'TRANSFER_OUT')
+       AND created_at::date=$2`,
+    [accountId, today]
   );
-  if (!account.rows.length) {
-    await publishEvent("transaction.error", {
-      account_id,
-      error: "ACCOUNT_NOT_FOUND"
-    });
-    throw new Error("ACCOUNT_NOT_FOUND");
-  }
-  if (account.rows[0].status === "FROZEN") {
-    await publishEvent("transaction.error", {
-      account_id,
-      error: "ACCOUNT_FROZEN"
-    });
-    throw new Error("ACCOUNT_FROZEN");
-  }
-  return account.rows[0];
-}
 
-// Helper: Check daily withdrawal/transfer limit
-async function checkDailyLimit(account_id, amount) {
-  const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
-  const result = await db.query(
-    `SELECT COALESCE(SUM(amount),0) AS total FROM transactions
-     WHERE account_id = $1 AND txn_type IN ('WITHDRAWAL','TRANSFER_OUT') AND created_at::date = $2`,
-    [account_id, today]
-  );
-  if (result.rows[0].total + amount > DAILY_LIMIT) {
-    await publishEvent("transaction.error", {
-      account_id,
-      error: "DAILY_LIMIT_EXCEEDED"
-    });
+  const totalToday = parseFloat(res.rows[0].total);
+  const DAILY_LIMIT = 200000;
+
+  if (totalToday + parseFloat(amount) > DAILY_LIMIT) {
     throw new Error("DAILY_LIMIT_EXCEEDED");
   }
+  return true;
 }
 
-// Process deposit
-async function processDeposit({ account_id, amount, counterparty }) {
-  await checkAccountStatus(account_id);
+// ===================
+// Deposit
+// ===================
+async function processDeposit({ account_id, amount, idempotency_key }) {
+  if (!idempotency_key) throw new Error("IDEMPOTENCY_KEY_REQUIRED");
 
-  const account = await db.query(
-    "SELECT balance FROM accounts WHERE account_id = $1",
-    [account_id]
+  const existing = await db.query(
+    "SELECT txn_id FROM transaction_idempotency WHERE idempotency_key=$1",
+    [idempotency_key]
   );
+  if (existing.rows.length) return { txn_id: existing.rows[0].txn_id, message: "Deposit already processed" };
 
-  const newBalance = parseFloat(account.rows[0].balance) + amount;
+  const accountRes = await db.query("SELECT status, balance FROM accounts WHERE account_id=$1", [account_id]);
+  if (!accountRes.rows.length) throw new Error("ACCOUNT_NOT_FOUND");
+  const account = accountRes.rows[0];
+  if (account.status === "FROZEN") throw new Error("ACCOUNT_FROZEN");
 
-  // Insert transaction record
-  const txn = await db.query(
-    `INSERT INTO transactions (account_id, amount, txn_type, counterparty)
-     VALUES ($1, $2, 'DEPOSIT', $3)
-     RETURNING *`,
-    [account_id, amount, counterparty]
-  );
-
-  // Update balance
-  await db.query("UPDATE accounts SET balance = $1 WHERE account_id = $2", [
-    newBalance,
-    account_id,
-  ]);
-
-  // Publish event
+  const client = await db.connect();
   try {
-    await publishEvent("transaction.deposit", txn.rows[0]);
-  } catch (err) {
-    console.error("Failed to publish deposit event:", err);
-  }
+    await client.query("BEGIN");
 
-  return txn.rows[0];
+    const newBalance = parseFloat(account.balance) + parseFloat(amount);
+    const txnRes = await client.query(
+      `INSERT INTO transactions (account_id, amount, txn_type, balance_after)
+       VALUES ($1, $2, 'DEPOSIT', $3) RETURNING *`,
+      [account_id, amount, newBalance]
+    );
+
+    await client.query("UPDATE accounts SET balance=$1 WHERE account_id=$2", [newBalance, account_id]);
+    await client.query("INSERT INTO transaction_idempotency (idempotency_key, txn_id) VALUES ($1, $2)", [idempotency_key, txnRes.rows[0].txn_id]);
+
+    await client.query("COMMIT");
+
+    await publishEvent("transaction.deposit", { txn: txnRes.rows[0] });
+    return txnRes.rows[0];
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
-
-// Process withdrawal
-// Process withdraw
-async function processWithdraw({ account_id, amount, counterparty }) {
-  await checkAccountStatus(account_id);
-
-  const account = await db.query(
-    "SELECT balance FROM accounts WHERE account_id = $1",
-    [account_id]
+// ===================
+// Withdraw
+// ===================
+async function processWithdraw({ account_id, amount, idempotency_key }) {
+  const existing = await db.query(
+    "SELECT txn_id FROM transaction_idempotency WHERE idempotency_key=$1",
+    [idempotency_key]
   );
+  if (existing.rows.length) return { txn_id: existing.rows[0].txn_id, message: "Withdrawal already processed" };
 
-  const currentBalance = parseFloat(account.rows[0].balance);
+  const accountRes = await db.query("SELECT status, balance FROM accounts WHERE account_id=$1", [account_id]);
+  if (!accountRes.rows.length) throw new Error("ACCOUNT_NOT_FOUND");
+  const account = accountRes.rows[0];
+  if (account.status === "FROZEN") throw new Error("ACCOUNT_FROZEN");
 
-  // Business rule — insufficient balance
-  if (currentBalance < amount) {
-    await publishEvent("transaction.error", {
-      account_id,
-      error: "INSUFFICIENT_FUNDS"
-    });
-    throw new Error("INSUFFICIENT_FUNDS");
-  }
+  await checkDailyLimit(account_id, amount);
 
-  // Example daily limit check (adjust as needed)
-  if (amount > 200000) {
-    await publishEvent("transaction.error", {
-      account_id,
-      error: "DAILY_LIMIT_EXCEEDED"
-    });
-    throw new Error("DAILY_LIMIT_EXCEEDED");
-  }
+  if (parseFloat(account.balance) < parseFloat(amount)) throw new Error("INSUFFICIENT_FUNDS");
 
-  const newBalance = currentBalance - amount;
-
-  const txn = await db.query(
-    `INSERT INTO transactions (account_id, amount, txn_type, counterparty)
-     VALUES ($1, $2, 'WITHDRAW', $3)
-     RETURNING *`,
-    [account_id, amount, counterparty]
-  );
-
-  await db.query("UPDATE accounts SET balance=$1 WHERE account_id=$2", [
-    newBalance,
-    account_id,
-  ]);
-
+  const client = await db.connect();
   try {
-    await publishEvent("transaction.withdraw", txn.rows[0]);
-  } catch (err) {
-    console.error("Failed to publish withdraw event:", err);
-  }
+    await client.query("BEGIN");
 
-  return txn.rows[0];
+    const newBalance = parseFloat(account.balance) - parseFloat(amount);
+    const txnRes = await client.query(
+      `INSERT INTO transactions (account_id, amount, txn_type, balance_after)
+       VALUES ($1, $2, 'WITHDRAW', $3) RETURNING *`,
+      [account_id, amount, newBalance]
+    );
+
+    await client.query("UPDATE accounts SET balance=$1 WHERE account_id=$2", [newBalance, account_id]);
+    await client.query("INSERT INTO transaction_idempotency (idempotency_key, txn_id) VALUES ($1, $2)", [idempotency_key, txnRes.rows[0].txn_id]);
+
+    await client.query("COMMIT");
+
+    await publishEvent("transaction.withdraw", { txn: txnRes.rows[0] });
+    return txnRes.rows[0];
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
+// ===================
+// Transfer
+// ===================
+async function processTransfer({ from_account_id, to_account_id, amount, counterparty, idempotency_key }) {
+  const existing = await db.query(
+    "SELECT txn_id FROM transaction_idempotency WHERE idempotency_key=$1",
+    [idempotency_key]
+  );
+  if (existing.rows.length) return { txn_id: existing.rows[0].txn_id, message: "Transfer already processed" };
 
-// Get account statement
-async function getStatement(account_id, limit = 50, offset = 0) {
-  await checkAccountStatus(account_id);
+  const fromAccount = await db.query("SELECT status, balance FROM accounts WHERE account_id=$1", [from_account_id]);
+  const toAccount = await db.query("SELECT status FROM accounts WHERE account_id=$1", [to_account_id]);
 
-  const result = await db.query(
+  if (!fromAccount.rows.length || !toAccount.rows.length) throw new Error("ACCOUNT_NOT_FOUND");
+  if (fromAccount.rows[0].status === "FROZEN" || toAccount.rows[0].status === "FROZEN") throw new Error("ACCOUNT_FROZEN");
+
+  await checkDailyLimit(from_account_id, amount);
+  if (parseFloat(fromAccount.rows[0].balance) < amount) throw new Error("INSUFFICIENT_FUNDS");
+
+  const client = await db.connect();
+  await client.query("BEGIN");
+
+  const debitTxn = await client.query(
+    `INSERT INTO transactions (account_id, amount, txn_type, counterparty)
+     VALUES ($1, $2, 'TRANSFER_OUT', $3) RETURNING *`,
+    [from_account_id, amount, counterparty]
+  );
+  await client.query("UPDATE accounts SET balance=balance-$1 WHERE account_id=$2", [amount, from_account_id]);
+
+  const creditTxn = await client.query(
+    `INSERT INTO transactions (account_id, amount, txn_type, counterparty)
+     VALUES ($1, $2, 'TRANSFER_IN', $3) RETURNING *`,
+    [to_account_id, amount, counterparty]
+  );
+  await client.query("UPDATE accounts SET balance=balance+$1 WHERE account_id=$2", [amount, to_account_id]);
+
+  await client.query("INSERT INTO transaction_idempotency (idempotency_key, txn_id) VALUES ($1, $2)", [idempotency_key, debitTxn.rows[0].txn_id]);
+
+  await client.query("COMMIT");
+
+  await publishEvent("transaction.transfer", { debitTxn: debitTxn.rows[0], creditTxn: creditTxn.rows[0] });
+
+  return { debitTxn: debitTxn.rows[0], creditTxn: creditTxn.rows[0] };
+}
+
+// ===================
+// Statement / History
+// ===================
+async function getStatement(account_id, limit = 10, offset = 0) {
+  const res = await db.query(
     `SELECT * FROM transactions
      WHERE account_id = $1
      ORDER BY created_at DESC
      LIMIT $2 OFFSET $3`,
     [account_id, limit, offset]
   );
-
-  return result.rows;
+  return res.rows;
 }
 
-// Get all transactions for an account
 async function getTransactionHistory(account_id) {
-  const result = await db.query(
-    `SELECT txn_id, amount, txn_type, counterparty, created_at
-     FROM transactions
+  const res = await db.query(
+    `SELECT * FROM transactions
      WHERE account_id = $1
      ORDER BY created_at DESC`,
     [account_id]
   );
-
-  return result.rows;
+  return res.rows;
 }
 
+// ===================
+// Export
+// ===================
 export default {
   processDeposit,
   processWithdraw,
+  processTransfer,
+  checkDailyLimit,
   getStatement,
-  getTransactionHistory,
+  getTransactionHistory
 };

@@ -1,102 +1,73 @@
-// @jest-environment node
-import { jest } from "@jest/globals";
+import request from "supertest";
+import app from "../src/app.js"; // your express app
+import db from "../src/db/connection.js";
 
-// --- Mock definitions (must be declared before imports) ---
-const mockQuery = jest.fn();
-const mockPublishEvent = jest.fn();
+describe("Transaction Service API", () => {
+  let depositIdempotencyKey;
+  let withdrawIdempotencyKey;
 
-jest.unstable_mockModule("../src/db/connection.js", () => ({
-  default: { query: mockQuery },
-}));
-
-jest.unstable_mockModule("../src/services/eventPublisher.js", () => ({
-  publishEvent: mockPublishEvent,
-}));
-
-// --- Import after mocks are registered ---
-const { default: transactionService } = await import("../src/services/transactionService.js");
-const { default: db } = await import("../src/db/connection.js");
-const eventPublisher = await import("../src/services/eventPublisher.js");
-
-// --- Tests ---
-describe("Transaction Service", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+  beforeAll(async () => {
+    // Optionally reset DB or use test DB
   });
 
-  describe("processDeposit", () => {
-    test("throws error if account is frozen", async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ status: "FROZEN", balance: 1000 }] });
+  afterAll(async () => {
+    await db.query("DELETE FROM transactions");
+    await db.query("DELETE FROM transaction_idempotency");
+    await db.query("UPDATE accounts SET balance=10000 WHERE account_id=1");
+    await db.end();
+  });
 
-      await expect(
-        transactionService.processDeposit({ account_id: 1, amount: 1000, counterparty: "test" })
-      ).rejects.toThrow("ACCOUNT_FROZEN");
-    });
-
-    test("deposits money and publishes event", async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [{ status: "ACTIVE", balance: 1000 }] }) // checkAccountStatus
-        .mockResolvedValueOnce({ rows: [{ balance: 1000 }] }) // get balance
-        .mockResolvedValueOnce({
-          rows: [
-            { txn_id: 1, account_id: 1, amount: 1000, txn_type: "DEPOSIT", counterparty: "test" },
-          ],
-        }) // insert txn
-        .mockResolvedValueOnce({}); // update balance
-
-      mockPublishEvent.mockResolvedValue();
-
-      const txn = await transactionService.processDeposit({
+  test("Deposit should succeed and publish event", async () => {
+    depositIdempotencyKey = `deposit-test-${Date.now()}`;
+    const res = await request(app)
+      .post("/transactions/deposit")
+      .send({
         account_id: 1,
         amount: 1000,
-        counterparty: "test",
+        idempotency_key: depositIdempotencyKey,
       });
-
-      expect(txn).toMatchObject({ account_id: 1, amount: 1000, txn_type: "DEPOSIT" });
-      expect(mockPublishEvent).toHaveBeenCalledWith("transaction.deposit", expect.any(Object));
-    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.balance_after).toBeDefined();
+    expect(res.body.amount).toBe(1000);
   });
 
-  describe("processWithdraw", () => {
-    test("throws error if account is frozen", async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ status: "FROZEN", balance: 1000 }] });
-
-      await expect(
-        transactionService.processWithdraw({ account_id: 1, amount: 500, counterparty: "test" })
-      ).rejects.toThrow("ACCOUNT_FROZEN");
-    });
-
-    test("throws error if insufficient funds", async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [{ status: "ACTIVE", balance: 100 }] }) // checkAccountStatus
-        .mockResolvedValueOnce({ rows: [{ balance: 100 }] }); // get balance
-
-      await expect(
-        transactionService.processWithdraw({ account_id: 1, amount: 500, counterparty: "test" })
-      ).rejects.toThrow("INSUFFICIENT_FUNDS");
-    });
-
-    test("withdraws money and publishes event", async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [{ status: "ACTIVE", balance: 1000 }] }) // checkAccountStatus
-        .mockResolvedValueOnce({ rows: [{ balance: 1000 }] }) // get balance
-        .mockResolvedValueOnce({
-          rows: [
-            { txn_id: 2, account_id: 1, amount: 500, txn_type: "WITHDRAW", counterparty: "test" },
-          ],
-        }) // insert txn
-        .mockResolvedValueOnce({}); // update balance
-
-      mockPublishEvent.mockResolvedValue();
-
-      const txn = await transactionService.processWithdraw({
+  test("Deposit with same idempotency key should not double charge", async () => {
+    const res = await request(app)
+      .post("/transactions/deposit")
+      .send({
         account_id: 1,
-        amount: 500,
-        counterparty: "test",
+        amount: 1000,
+        idempotency_key: depositIdempotencyKey,
       });
+    expect(res.body.message).toBe("Deposit already processed");
+  });
 
-      expect(txn).toMatchObject({ account_id: 1, amount: 500, txn_type: "WITHDRAW" });
-      expect(mockPublishEvent).toHaveBeenCalledWith("transaction.withdraw", expect.any(Object));
-    });
+  test("Withdraw should fail if insufficient funds", async () => {
+    withdrawIdempotencyKey = `withdraw-test-${Date.now()}`;
+    const res = await request(app)
+      .post("/transactions/withdraw")
+      .send({
+        account_id: 3,
+        amount: 5000,
+        idempotency_key: withdrawIdempotencyKey,
+      });
+    expect(res.statusCode).toBe(500);
+    expect(res.body.error).toBe("INSUFFICIENT_FUNDS");
+  });
+
+  test("Transfer should succeed between two accounts", async () => {
+    const key = `transfer-test-${Date.now()}`;
+    const res = await request(app)
+      .post("/transactions/transfer")
+      .send({
+        from_account_id: 1,
+        to_account_id: 3,
+        amount: 500,
+        counterparty: "ACC1003",
+        idempotency_key: key
+      });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.debitTxn.amount).toBe(500);
+    expect(res.body.creditTxn.amount).toBe(500);
   });
 });

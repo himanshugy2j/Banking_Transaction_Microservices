@@ -153,4 +153,51 @@ router.get("/statement/:account_id", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /transactions/transfer:
+ *   post:
+ *     summary: Transfer money between accounts
+ *     tags: [Transactions]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               from_account_id:
+ *                 type: integer
+ *               to_account_id:
+ *                 type: integer
+ *               amount:
+ *                 type: number
+ *               counterparty:
+ *                 type: string
+ *               idempotency_key:
+ *                 type: string
+ *             required:
+ *               - from_account_id
+ *               - to_account_id
+ *               - amount
+ *               - idempotency_key
+ *     responses:
+ *       200:
+ *         description: Transfer successful
+ *       400:
+ *         description: Business error
+ *       500:
+ *         description: Internal server error
+ */
+router.post("/transfer", async (req, res) => {
+    try {
+        const result = await transactionService.processTransfer(req.body);
+        res.json(result);
+    } catch (err) {
+        console.error("transfer error:", err);
+        res.status(400).json({ error: err.message });
+    }
+});
+
+
 export default router;
