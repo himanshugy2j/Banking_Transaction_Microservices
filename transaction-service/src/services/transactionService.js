@@ -95,11 +95,19 @@ async function processWithdraw({ account_id, amount, counterparty }) {
 
   // Business rule — insufficient balance
   if (currentBalance < amount) {
+    await publishEvent("transaction.error", {
+      account_id,
+      error: "INSUFFICIENT_FUNDS"
+    });
     throw new Error("INSUFFICIENT_FUNDS");
   }
 
   // Example daily limit check (adjust as needed)
   if (amount > 200000) {
+    await publishEvent("transaction.error", {
+      account_id,
+      error: "DAILY_LIMIT_EXCEEDED"
+    });
     throw new Error("DAILY_LIMIT_EXCEEDED");
   }
 

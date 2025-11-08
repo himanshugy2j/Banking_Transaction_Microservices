@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+
+  transaction-db:
+    image: postgres:18
+    container_name: transaction-db
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: Password
+      POSTGRES_DB: transactions
+    ports:
+      - "5432:5432"
+    volumes:
+      # ✅ Correct relative path to your init.sql file
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d transactions"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - banking_network
+
+  transaction-service:
+    build: .
+    container_name: transaction-service
+    restart: always
+    depends_on:
+      transaction-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      DB_HOST: transaction-db
+      DB_PORT: 5432
+      DB_USER: admin
+      DB_PASSWORD: Password
+      DB_NAME: transactions
+      RABBITMQ_URL: amqp://admin:admin@rabbitmq:5672
+    ports:
+      - "3000:3000"
+    command: npm start
+    networks:
+      - banking_network
+
+volumes:
+  pgdata:
+
+networks:
+  banking_network:
+    external: true

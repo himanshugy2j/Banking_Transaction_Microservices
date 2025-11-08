@@ -1,0 +1,107 @@
+version: "3.8"
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banking_network
+
+  transaction-db:
+    image: postgres:16
+    container_name: transaction-db
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: Password
+      POSTGRES_DB: transactions
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./transaction-service/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d transactions"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - banking_network
+
+  transaction-service:
+    build: ./transaction-service
+    container_name: transaction-service
+    depends_on:
+      transaction-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      DB_HOST: transaction-db
+      DB_PORT: 5432
+      DB_USER: admin
+      DB_PASSWORD: Password
+      DB_NAME: transactions
+      RABBITMQ_URL: amqp://admin:admin@rabbitmq:5672
+    ports:
+      - "3000:3000"
+    networks:
+      - banking_network
+
+  notification-db:
+    image: postgres:16
+    container_name: notification-db
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: Password
+      POSTGRES_DB: notifications
+    volumes:
+      - ./notification-service/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata_notification:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d notifications"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - banking_network
+
+  notification-service:
+    build: ./notification-service
+    container_name: notification-service
+    depends_on:
+      notification-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      DB_HOST: notification-db
+      DB_PORT: 5432
+      DB_USER: admin
+      DB_PASSWORD: Password
+      DB_NAME: notifications
+      RABBITMQ_URL: amqp://admin:admin@rabbitmq:5672
+    ports:
+      - "3003:3003"
+    networks:
+      - banking_network
+
+volumes:
+  pgdata:
+  pgdata_notification:
+
+networks:
+  banking_network:
+    driver: bridge
