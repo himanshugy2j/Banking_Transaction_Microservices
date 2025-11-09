@@ -1,240 +1,249 @@
-# Banking Transaction Microservices
+Banking Transaction Service
+The Transaction Service manages all core banking operations—deposits, withdrawals, and transfers—ensuring data consistency and idempotency.
+It maintains account balances, prevents duplicate transactions, and publishes transaction events to RabbitMQ so other services (like Notifications) can react asynchronously.
 
-This repository contains a modular banking microservices system built with **Node.js**, **PostgreSQL**, and **RabbitMQ**.  
-It includes two main services:
+✨ Features
+Handles Deposit, Withdraw, and Transfer operations
 
-- **Transaction Service**: Handles customer accounts, deposits, withdrawals, and publishes transaction events.
-- **Notification Service**: Subscribes to transaction events and stores notifications, ready for extension to email/SMS/push.
+Maintains account balances with validation
 
----
+Uses idempotency keys to prevent duplicate transactions
 
-## Table of Contents
+Publishes events to RabbitMQ (transaction_events queue)
 
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Project Structure](#project-structure)
-- [Database Setup](#database-setup)
-- [Docker Setup](#docker-setup)
-- [Running Services](#running-services)
-- [Testing](#testing)
-- [API Endpoints](#api-endpoints)
-- [Event Flow](#event-flow)
-- [Troubleshooting](#troubleshooting)
-- [Extending Notifications](#extending-notifications)
-- [Notes](#notes)
+REST API with Swagger Documentation
 
----
+PostgreSQL persistence layer
 
-## Architecture
+📁 Project Structure
+text
+.
+├── .env
+├── docker-compose.yml
+├── Dockerfile
+├── package.json
+├── scripts/
+│   └── init.sql
+├── src/
+│   ├── app.js                   # Express entry point
+│   ├── db/
+│   │   └── connection.js        # PostgreSQL connection
+│   ├── routes/
+│   │   └── transactions.js      # REST endpoints
+│   └── services/
+│       ├── transactionService.js# Core business logic
+│       └── eventPublisher.js    # Publishes events to RabbitMQ
+🧩 Prerequisites
+Node.js >= 20
 
-- **Transaction Service**: REST API for banking operations. Publishes events (success/error) to RabbitMQ.
-- **Notification Service**: Listens to RabbitMQ events, stores notifications in its own DB.
-- **RabbitMQ**: Message broker for event-driven communication.
-- **PostgreSQL**: Separate databases for each service.
+npm
 
----
+Docker & Docker Compose
 
-## Prerequisites
+RabbitMQ (can be run with Docker Compose)
 
-- [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/)
-- Node.js >= 20
-- npm
+⚙️ Environment Configuration
+Create a .env file with:
 
----
+text
+PORT=3000
+DB_HOST=transaction-db
+DB_USER=postgres
+DB_PASS=postgres
+DB_NAME=transaction_db
+DB_PORT=5432
+RABBITMQ_URL=amqp://admin:Password@transaction-rabbitmq:5672/
+🗄️ Database Schema
+Auto-initialized via scripts/init.sql.
+Key tables:
 
-## Project Structure
+customers
 
-```
-/transaction-service
-  ├─ src/
-  │   ├─ app.js
-  │   ├─ routes/
-  │   ├─ services/
-  │   ├─ db/connection.js
-  │   └─ init.sql
-  ├─ Dockerfile
-  ├─ package.json
-  ├─ .env
-  └─ unit_tests/
-      └─ transactionService.test.js
+Column	Type	Description
+customer_id	SERIAL	Primary key
+name	VARCHAR(100)	Customer name
+email	VARCHAR(100)	Customer email
+phone	VARCHAR(20)	Contact number
+kyc_status	VARCHAR(20)	KYC verification status
+created_at	TIMESTAMP	Auto timestamp
+accounts
 
-/notification-service
-  ├─ src/
-  │   ├─ index.js
-  │   ├─ routes/
-  │   ├─ services/
-  │   ├─ db/connection.js
-  │   └─ init.sql
-  ├─ Dockerfile
-  ├─ package.json
-  ├─ .env
+Column	Type	Description
+account_id	SERIAL	Primary key
+customer_id	INTEGER	Foreign key to customers
+account_number	VARCHAR(50)	Unique account number
+balance	NUMERIC(15,2)	Current balance
+created_at	TIMESTAMP	Auto timestamp
+transactions
 
-/docker-compose.yml
-```
+Column	Type	Description
+txn_id	SERIAL	Primary key
+account_id	INTEGER	Linked account
+txn_type	VARCHAR(50)	Deposit/Withdraw/Transfer
+amount	NUMERIC(15,2)	Transaction amount
+balance_before	NUMERIC(15,2)	Previous balance
+balance_after	NUMERIC(15,2)	Updated balance
+counterparty	VARCHAR(50)	Other account in transfer
+created_at	TIMESTAMP	Auto timestamp
+transaction_idempotency
 
----
+Column	Type	Description
+id	SERIAL	Primary key
+idempotency_key	VARCHAR(255)	Unique request key
+account_id	INTEGER	Related account
+created_at	TIMESTAMP	Auto timestamp
+🐳 Running with Docker Compose
+Build and start all services (DB, RabbitMQ, Transaction):
 
-## Database Setup
-
-### Transaction Service (`transaction-db`)
-- **Tables**: `customers`, `accounts`, `transactions`
-- **Default Data**: Sample customers/accounts for testing edge cases (active, frozen, low balance)
-- **Init**: Runs `init.sql` automatically on container startup
-
-### Notification Service (`notification-db`)
-- **Table**: `notifications`
-- **Columns**: `notification_id`, `event_type`, `account_id`, `amount`, `message`, `created_at`
-- **Init**: Runs `init.sql` automatically on container startup
-
----
-
-## Docker Setup
-
-Build and start all services:
-
-```sh
+text
 docker-compose up --build
-```
+Run detached:
 
-**Services:**
+text
+docker-compose up -d
+View logs:
 
-| Service               | Port(s)      | Description                                 |
-|-----------------------|--------------|---------------------------------------------|
-| rabbitmq              | 5672, 15672  | RabbitMQ broker & management UI             |
-| transaction-db        | 5432         | PostgreSQL for Transaction Service          |
-| notification-db       | 5432         | PostgreSQL for Notification Service         |
-| transaction-service   | 3000         | Transaction API & event publisher           |
-| notification-service  | 3003         | Notification API & event subscriber         |
+text
+docker logs -f transaction-service
+Expected:
 
----
+Transactions table ready
 
-## Running Services (Local Development)
+Swagger docs at http://localhost:3000/api-docs
 
-**Transaction Service:**
-```sh
+Server running on port 3000
+
+🧠 Running Locally (Without Docker)
+Install & start:
+
+text
+npm install
+npm run dev
+Ensure PostgreSQL and RabbitMQ are accessible per your .env.
+
+🌐 API Endpoints
+Method	Endpoint	Description
+POST	/transactions/deposit	Deposit funds
+POST	/transactions/withdraw	Withdraw funds
+POST	/transactions/transfer	Transfer between accounts
+GET	/api-docs	Swagger Documentation
+🧾 Example Requests
+Deposit
+text
+curl -X POST http://localhost:3000/transactions/deposit   -H "Content-Type: application/json"   -d '{
+    "account_id": 1, "amount": 1000, "idempotency_key": "dep-001"
+  }'
+Response:
+
+json
+{
+  "message": "Deposit successful",
+  "account_id": 1,
+  "amount": 1000,
+  "balance_after": 11000
+}
+Withdraw
+text
+curl -X POST http://localhost:3000/transactions/withdraw   -H "Content-Type: application/json"   -d '{
+    "account_id": 1, "amount": 500, "idempotency_key": "with-001"
+  }'
+Response:
+
+json
+{
+  "message": "Withdrawal successful",
+  "account_id": 1,
+  "amount": 500,
+  "balance_after": 10500
+}
+Transfer
+text
+curl -X POST http://localhost:3000/transactions/transfer   -H "Content-Type: application/json"   -d '{
+    "from_account_id": 1, "to_account_id": 2,
+    "amount": 1000, "counterparty": "ACC1002",
+    "idempotency_key": "transfer-001"
+  }'
+Response:
+
+json
+{
+  "message": "Transfer successful",
+  "debitTxn": { "amount": 1000 },
+  "creditTxn": { "amount": 1000 }
+}
+🔄 Event Flow
+text
+User initiates deposit/withdraw/transfer
+→ Transaction Service validates & updates balances
+→ Publishes event to RabbitMQ
+→ Notification Service consumes & stores notification
+🧪 Testing
+Unit & integration tests with Jest & Supertest, e.g.:
+
+unit_tests/transactionService.test.js
+
+js
+import request from "supertest";
+import app from "../src/app.js";
+
+describe("Transaction API", () => {
+  test("Deposit should succeed", async () => {
+    const res = await request(app)
+      .post("/transactions/deposit")
+      .send({ account_id: 1, amount: 500, idempotency_key: "test-key-1" });
+    expect(res.statusCode).toBe(200);
+  });
+});
+Run:
+
+text
+npm test
+If Cannot use import statement outside a module, add "type": "module" in your package.json.
+
+🧩 Idempotency Explained
+Every transaction request must have an idempotency_key—this prevents repeated client requests from causing duplicates.
+Workflow:
+
+text
+Client sends idempotency_key
+→ Check transaction_idempotency table
+   ├─ If exists: Return same response
+   └─ If new:    Process transaction, store key, publish event
+⚙️ Configuration Overview
+text
+src/
+├── app.js                     # Express app setup
+├── routes/
+│   └── transactions.js        # REST endpoints
+├── services/
+│   ├── transactionService.js  # Business logic
+│   └── eventPublisher.js      # RabbitMQ event publisher
+├── db/
+│   └── connection.js          # PostgreSQL connection
+└── scripts/
+    └── init.sql               # DB initialization
+📘 Swagger Documentation
+Access Swagger UI at:
+👉 http://localhost:3000/api-docs
+
+📜 License
+MIT License
+
+👤 Author
+Himanshu S Gautam
+Student ID: 2024TM93048
+
+🧭 Quick Start
+text
+# 1. Clone repository
+git clone <your-repo-url>
 cd transaction-service
-npm install
-npm run dev
-```
 
-**Notification Service:**
-```sh
-cd notification-service
-npm install
-npm run dev
-```
+# 2. Configure environment
+cp .env.example .env
 
-Both services connect to their respective DBs and RabbitMQ as configured in `.env`.
+# 3. Start service
+docker-compose up --build
 
----
-
-## Testing
-
-### Unit Tests
-
-- Transaction Service: Jest tests in `unit_tests/transactionService.test.js`
-- Run all tests:
-  ```sh
-  npm test
-  ```
-
-### Example cURL Commands
-
-**Deposit**
-```sh
-curl -X POST http://localhost:3000/transactions/deposit \
-  -H "Content-Type: application/json" \
-  -d '{"account_id":1,"amount":1000}'
-```
-
-**Withdraw**
-```sh
-curl -X POST http://localhost:3000/transactions/withdraw \
-  -H "Content-Type: application/json" \
-  -d '{"account_id":1,"amount":500}'
-```
-
-**Get Statement**
-```sh
-curl http://localhost:3000/transactions/statement/1
-```
-
-### Edge Case Testing
-
-| Scenario             | Account ID | Expected Event         |
-|----------------------|------------|------------------------|
-| Account not found    | 999        | `transaction.error`    |
-| Account frozen       | 2          | `transaction.error`    |
-| Insufficient funds   | 3          | `transaction.error`    |
-| Exceed daily limit   | 1          | `transaction.error`    |
-
-Notification Service logs received events and stores them in its DB.
-
----
-
-## API Endpoints
-
-### Transaction Service
-
-| Method | Endpoint                                 | Description                |
-|--------|------------------------------------------|----------------------------|
-| POST   | `/transactions/deposit`                  | Make a deposit             |
-| POST   | `/transactions/withdraw`                 | Make a withdrawal          |
-| GET    | `/transactions/statement/:account_id`    | Get account statement      |
-| GET    | `/transactions/history/:account_id`      | Get all transactions       |
-
-### Notification Service
-
-- Logs received events and stores them in DB.
-- Ready to extend for email/SMS/push notifications.
-
----
-
-## Event Flow
-
-1. **Transaction Service** publishes events (success/error) to RabbitMQ.
-2. **Notification Service** subscribes to `transaction_events` queue.
-3. On event, Notification Service logs and stores notification.
-
----
-
-## Troubleshooting
-
-- **Port conflicts**: Only one RabbitMQ/PostgreSQL container can bind to a port at a time. Stop/remove old containers if needed.
-- **Database errors**: Ensure DB containers are healthy and environment variables are correct.
-- **RabbitMQ errors**: Ensure RabbitMQ is running before starting services.
-- **Docker Compose warnings**: The `version` attribute is obsolete; you can safely remove it.
-
----
-
-## Extending Notifications
-
-- Implement email, SMS, or push notification logic in `notificationSender.js`.
-- Add REST endpoints to Notification Service for querying notifications.
-
----
-
-## Notes
-
-- Both services are event-driven using RabbitMQ.
-- `init.sql` files ensure default data for testing and are run automatically on service startup.
-- Each service has its own database and can scale independently.
-- Swagger docs are available for Transaction Service at `/api-docs` (if enabled).
-
----
-
-## License
-
-MIT (or your preferred license)
-
----
-
-## Authors
-
-- Himanshu S Gautam - 2024TM93048
-
----
-
-## Feedback & Contributions
-
-Feel free to open issues or submit pull requests for improvements!
+# 4. Access docs
+http://localhost:3000/api-docs
